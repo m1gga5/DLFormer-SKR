@@ -1,9 +1,8 @@
+import numpy as np
 import torch
 import torch.nn as nn
-import math
-import warnings
-import numpy as np
-from collections import OrderedDict
+from model.DSTformer import Block
+from model.augment2D import add_mask
 from model.drop import DropPath
 from model.optical_flow import lucas_kanade_optical_flow
 
@@ -158,7 +157,7 @@ class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., mlp_out_ratio=1., qkv_bias=True, qk_scale=None, drop=0.,
                  attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, st_mode='stage_st', att_fuse=True):
+                 drop_path=0, act_layer=nn.GELU, norm_layer=nn.LayerNorm, st_mode='stage_st', att_fuse=False):
         super().__init__()
         # assert 'stage' in st_mode
         self.st_mode = st_mode
@@ -196,6 +195,12 @@ class Block(nn.Module):
             x = x + self.drop_path(self.mlp_t(self.norm2_t(x)))
             x = x + self.drop_path(self.attn_s(self.norm1_s(x), seqlen))
             x = x + self.drop_path(self.mlp_s(self.norm2_s(x)))
+        elif self.st_mode == 'stage_t':
+            x = x + self.drop_path(self.attn_t(self.norm1_t(x), seqlen))
+            x = x + self.drop_path(self.mlp_t(self.norm2_t(x)))
+        elif self.st_mode == 'stage_s':
+            x = x + self.drop_path(self.attn_s(self.norm1_s(x), seqlen))
+            x = x + self.drop_path(self.mlp_s(self.norm2_s(x)))
         elif self.st_mode == 'stage_para':
             x_t = x + self.drop_path(self.attn_t(self.norm1_t(x), seqlen))
             x_t = x_t + self.drop_path(self.mlp_t(self.norm2_t(x_t)))
@@ -216,10 +221,10 @@ class Block(nn.Module):
         return x
 
 
-class DSTformer(nn.Module):
-    def __init__(self, dim_in=3, dim_out=3, dim_feat=256, dim_rep=512,
+class DLFormer(nn.Module):
+    def __init__(self, dim_in=2, dim_out=2, dim_feat=256, dim_rep=256,
                  depth=5, num_heads=8, mlp_ratio=4,
-                 num_joints=17, maxlen=243,
+                 num_joints=14, maxlen=243,
                  qkv_bias=True, qk_scale=None, drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
                  norm_layer=nn.LayerNorm, att_fuse=True):
         super().__init__()
@@ -241,25 +246,16 @@ class DSTformer(nn.Module):
                 st_mode="stage_ts")
             for i in range(depth)])
         self.norm = norm_layer(dim_feat)
-        if dim_rep:
-            self.pre_logits = nn.Sequential(OrderedDict([
-                ('fc', nn.Linear(dim_feat, dim_rep)),
-                ('act', nn.Tanh())
-            ]))
-        else:
-            self.pre_logits = nn.Identity()
         self.head = nn.Linear(dim_rep, dim_out) if dim_out > 0 else nn.Identity()
         self.temp_embed = nn.Parameter(torch.zeros(1, maxlen, 1, dim_feat))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_joints, dim_feat))
         self.att_fuse = att_fuse
-        if self.att_fuse:
-            self.ts_attn = nn.ModuleList([nn.Linear(dim_feat * 2, 2) for i in range(depth)])
 
     def forward(self, x, y):  # x:seq  y:pose
         B, F, J, C = x.shape
         y = y.repeat(1, F, 1, 1)
         x = lucas_kanade_optical_flow(y, x)
-        # y = add_mask(y)
+        y = add_mask(y)
         x = x.reshape(-1, J, C)
         BF = x.shape[0]
         x = self.joints_embed(x)
@@ -284,6 +280,5 @@ class DSTformer(nn.Module):
         x = x.reshape(B, F, J, -1)
         y = y.reshape(B, F, J, -1)
         res = x + y
-        res = self.pre_logits(res)
         res = self.head(res)
         return res
