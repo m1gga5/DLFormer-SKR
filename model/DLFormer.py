@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from model.DSTformer import Block
 from model.augment2D import add_mask
 from model.drop import DropPath
 from model.optical_flow import lucas_kanade_optical_flow
